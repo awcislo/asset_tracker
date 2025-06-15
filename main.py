@@ -77,93 +77,179 @@ class AssetTrackerDB:
             VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
         """, (sysname, model, manufacturer, asset_type, ip_address, purchase_date, note, employee_id))
         self.conn.commit()
-    def add_software_asset(self, os_name, version, manufacturer):
-        cursor = self.conn.cursor()
-        cursor.execute("""
-            INSERT INTO software_assets (os_name, version, manufacturer)
-            VALUES (%s, %s, %s)
-        """, (os_name, version, manufacturer))
-        self.conn.commit()
-
-    def update_software_asset(self, software_id, os_name, version, manufacturer):
-        cursor = self.conn.cursor()
-        cursor.execute("""
-            UPDATE software_assets
-            SET os_name=%s, version=%s, manufacturer=%s
-            WHERE id=%s
-        """, (os_name, version, manufacturer, software_id))
-        self.conn.commit()
-
-    def delete_software_asset(self, software_id):
-        cursor = self.conn.cursor()
-        cursor.execute("DELETE FROM software_assets WHERE id=%s", (software_id,))
-        self.conn.commit()
 
     def get_software_assets(self):
         cursor = self.conn.cursor()
         cursor.execute("SELECT id, os_name, version, manufacturer FROM software_assets")
         return cursor.fetchall()
 
-    def link_software_to_hardware(self, software_id, hardware_id):
+    def add_software_asset(self, os_name, version, manufacturer):
+        cursor = self.conn.cursor()
+        cursor.execute(
+            "INSERT INTO software_assets (os_name, version, manufacturer) VALUES (%s, %s, %s)",
+            (os_name, version, manufacturer)
+        )
+        self.conn.commit()
+        return cursor.lastrowid
+
+    def update_software_asset(self, asset_id, os_name, version, manufacturer):
+        cursor = self.conn.cursor()
+        cursor.execute(
+            "UPDATE software_assets SET os_name=%s, version=%s, manufacturer=%s WHERE id=%s",
+            (os_name, version, manufacturer, asset_id)
+        )
+        self.conn.commit()
+
+    def delete_software_asset(self, asset_id):
+        cursor = self.conn.cursor()
+        cursor.execute("DELETE FROM asset_links WHERE software_id=%s", (asset_id,))
+        cursor.execute("DELETE FROM software_assets WHERE id=%s", (asset_id,))
+        self.conn.commit()
+
+    def get_all_hardware(self):
+        cursor = self.conn.cursor()
+        cursor.execute("SELECT id, system_name, model FROM hardware_assets")
+        return cursor.fetchall()
+
+    def get_hardware_for_software(self, software_id):
         cursor = self.conn.cursor()
         cursor.execute("""
-            INSERT INTO asset_links (software_id, hardware_id, link_date)
-            VALUES (%s, %s, %s)
-        """, (software_id, hardware_id, datetime.now().date()))
+            SELECT ha.id, ha.system_name, ha.model
+            FROM hardware_assets ha
+            JOIN asset_links al ON ha.id = al.hardware_id
+            WHERE al.software_id = %s
+        """, (software_id,))
+        return cursor.fetchall()
+
+    def link_software_to_hardware(self, software_id, hardware_id):
+        cursor = self.conn.cursor()
+        # Remove existing links
+        cursor.execute("DELETE FROM asset_links WHERE software_id=%s", (software_id,))
+        cursor.execute("INSERT INTO asset_links (hardware_id, software_id, link_date) VALUES (%s, %s, NOW())", (hardware_id, software_id))
         self.conn.commit()
 
 
 class AddSoftwareAssetForm(QWidget):
-    def __init__(self, db):
+    def __init__(self, db, edit_asset=None, refresh_callback=None):
         super().__init__()
         self.db = db
-        self.setWindowTitle("Add Software Asset")
+        self.edit_asset = edit_asset
+        self.refresh_callback = refresh_callback
+        self.setWindowTitle("Edit Software Asset" if edit_asset else "Add Software Asset")
         self.init_ui()
 
     def init_ui(self):
         layout = QVBoxLayout()
-        self.os_name_input = QLineEdit(platform.system())
-        self.version_input = QLineEdit(platform.version())
-        self.manufacturer_input = QLineEdit(platform.platform())
+        self.os_name_input = QLineEdit()
+        self.os_name_input.setPlaceholderText("OS Name (e.g. Windows 10)")
+        self.version_input = QLineEdit()
+        self.version_input.setPlaceholderText("Version (e.g. 21H2)")
+        self.manufacturer_input = QLineEdit()
+        self.manufacturer_input.setPlaceholderText("Manufacturer (e.g. Microsoft)")
 
+        # Hardware dropdown
+        self.hardware_dropdown = QComboBox()
+        self.hardware_map = {}
+        for hw_id, sys_name, model in self.db.get_all_hardware():
+            label = f"{sys_name} ({model})"
+            self.hardware_dropdown.addItem(label)
+            self.hardware_map[label] = hw_id
+
+        if self.edit_asset:
+            sw_id, os_name, version, manufacturer = self.edit_asset
+            self.os_name_input.setText(os_name)
+            self.version_input.setText(version)
+            self.manufacturer_input.setText(manufacturer)
+            # Set dropdown to currently linked hardware if exists
+            linked_hw = self.db.get_hardware_for_software(sw_id)
+            if linked_hw:
+                linked_label = f"{linked_hw[0][1]} ({linked_hw[0][2]})"
+                self.hardware_dropdown.setCurrentText(linked_label)
+
+        save_btn = QPushButton("Update Software Asset" if self.edit_asset else "Save Software Asset")
+        save_btn.clicked.connect(self.save_asset)
         layout.addWidget(QLabel("OS Name:"))
         layout.addWidget(self.os_name_input)
         layout.addWidget(QLabel("Version:"))
         layout.addWidget(self.version_input)
         layout.addWidget(QLabel("Manufacturer:"))
         layout.addWidget(self.manufacturer_input)
-
-        # Assign to hardware asset
-        self.hw_dropdown = QComboBox()
-        self.hw_map = {}
-        cursor = self.db.conn.cursor()
-        cursor.execute("SELECT id, system_name FROM hardware_assets")
-        for hw_id, sys_name in cursor.fetchall():
-            self.hw_dropdown.addItem(sys_name)
-            self.hw_map[sys_name] = hw_id
-        layout.addWidget(QLabel("Assign to Hardware:"))
-        layout.addWidget(self.hw_dropdown)
-
-        save_btn = QPushButton("Save Software Asset")
-        save_btn.clicked.connect(self.save_software_asset)
+        layout.addWidget(QLabel("Link to Hardware:"))
+        layout.addWidget(self.hardware_dropdown)
         layout.addWidget(save_btn)
         self.setLayout(layout)
 
-    def save_software_asset(self):
-        os_name = self.os_name_input.text()
-        version = self.version_input.text()
-        manufacturer = self.manufacturer_input.text()
-        hw_name = self.hw_dropdown.currentText()
-        hw_id = self.hw_map[hw_name]
-        self.db.add_software_asset(os_name, version, manufacturer)
-        # Get software_id (assuming it's auto-increment)
-        cursor = self.db.conn.cursor()
-        cursor.execute("SELECT LAST_INSERT_ID()")
-        software_id = cursor.fetchone()[0]
-        self.db.link_software_to_hardware(software_id, hw_id)
-        QMessageBox.information(self, "Saved", "Software asset added and assigned!")
+    def save_asset(self):
+        os_name = self.os_name_input.text().strip()
+        version = self.version_input.text().strip()
+        manufacturer = self.manufacturer_input.text().strip()
+        hardware_label = self.hardware_dropdown.currentText()
+        hardware_id = self.hardware_map.get(hardware_label)
+
+        if not all([os_name, version, manufacturer, hardware_id]):
+            QMessageBox.warning(self, "Incomplete", "Please fill all fields and select hardware.")
+            return
+
+        if self.edit_asset:
+            sw_id = self.edit_asset[0]
+            self.db.update_software_asset(sw_id, os_name, version, manufacturer)
+            self.db.link_software_to_hardware(sw_id, hardware_id)
+            QMessageBox.information(self, "Success", "Software asset updated.")
+        else:
+            sw_id = self.db.add_software_asset(os_name, version, manufacturer)
+            self.db.link_software_to_hardware(sw_id, hardware_id)
+            QMessageBox.information(self, "Success", "Software asset added and linked.")
+
+        if self.refresh_callback:
+            self.refresh_callback()
         self.close()
 
+
+class SoftwareAssetTable(QWidget):
+    def __init__(self, db):
+        super().__init__()
+        self.db = db
+        self.setWindowTitle("Software Asset Management")
+        self.init_ui()
+
+    def init_ui(self):
+        layout = QVBoxLayout()
+        self.table = QTableWidget()
+        self.refresh_table()
+        add_btn = QPushButton("Add Software")
+        add_btn.clicked.connect(self.open_add)
+        layout.addWidget(self.table)
+        layout.addWidget(add_btn)
+        self.setLayout(layout)
+
+    def refresh_table(self):
+        data = self.db.get_software_assets()
+        self.table.setColumnCount(6)
+        self.table.setRowCount(len(data))
+        self.table.setHorizontalHeaderLabels(["ID", "Name", "Version", "Manufacturer", "Edit", "Delete"])
+        for row, asset in enumerate(data):
+            for col in range(4):
+                self.table.setItem(row, col, QTableWidgetItem(str(asset[col])))
+            edit_btn = QPushButton("Edit")
+            edit_btn.clicked.connect(lambda _, a=asset: self.open_edit(a))
+            del_btn = QPushButton("Delete")
+            del_btn.clicked.connect(lambda _, aid=asset[0]: self.delete_software(aid))
+            self.table.setCellWidget(row, 4, edit_btn)
+            self.table.setCellWidget(row, 5, del_btn)
+
+    def open_add(self):
+        self.form = AddSoftwareAssetForm(self.db, refresh_callback=self.refresh_table)
+        self.form.show()
+
+    def open_edit(self, asset):
+        self.edit_form = AddSoftwareAssetForm(self.db, edit_asset=asset, refresh_callback=self.refresh_table)
+        self.edit_form.show()
+
+    def delete_software(self, asset_id):
+        reply = QMessageBox.question(self, "Confirm Delete", "Delete this software asset?", QMessageBox.Yes | QMessageBox.No)
+        if reply == QMessageBox.Yes:
+            self.db.delete_software_asset(asset_id)
+            self.refresh_table()
 
 class AddEmployeeForm(QWidget):
     def __init__(self, db):
@@ -294,6 +380,49 @@ class PersonalAssetViewer(QWidget):
         for s in sw_assets:
             layout.addWidget(QLabel(f"{s[0]} version {s[1]}"))
         self.setLayout(layout)
+
+class EditEmployeeForm(QWidget):
+    def __init__(self, db, employee, refresh_callback=None):
+        super().__init__()
+        self.db = db
+        self.employee = employee  # tuple: (id, fname, lname, email, dept)
+        self.refresh_callback = refresh_callback
+        self.setWindowTitle("Edit Employee")
+        self.init_ui()
+    
+    def init_ui(self):
+        layout = QVBoxLayout()
+        self.first_input = QLineEdit(self.employee[1])
+        self.last_input = QLineEdit(self.employee[2])
+        self.email_input = QLineEdit(self.employee[3])
+        self.dept_label = QLabel(self.employee[4])
+        save_btn = QPushButton("Save")
+        save_btn.clicked.connect(self.save_employee)
+        layout.addWidget(QLabel("First Name:")); layout.addWidget(self.first_input)
+        layout.addWidget(QLabel("Last Name:")); layout.addWidget(self.last_input)
+        layout.addWidget(QLabel("Email:")); layout.addWidget(self.email_input)
+        layout.addWidget(QLabel("Department:")); layout.addWidget(self.dept_label)
+        layout.addWidget(save_btn)
+        self.setLayout(layout)
+    
+    def save_employee(self):
+        fn = self.first_input.text().strip()
+        ln = self.last_input.text().strip()
+        email = self.email_input.text().strip()
+        if not all([fn, ln, email]):
+            QMessageBox.warning(self, "Incomplete", "Please complete all fields.")
+            return
+        cursor = self.db.conn.cursor()
+        cursor.execute(
+            "UPDATE employees SET first_name=%s, last_name=%s, email=%s WHERE id=%s",
+            (fn, ln, email, self.employee[0])
+        )
+        self.db.conn.commit()
+        QMessageBox.information(self, "Success", "Employee updated.")
+        if self.refresh_callback:
+            self.refresh_callback()
+        self.close()
+
 class EmployeeMonitor(QWidget):
     def __init__(self, db, department):
         super().__init__()
@@ -336,17 +465,25 @@ class EmployeeMonitor(QWidget):
             self.add_emp_btn.clicked.connect(self.open_add_employee_form)
             btn_row.addWidget(self.add_emp_btn)
 
-            self.hw_btn = QPushButton("Add Hardware to Employee")
-            self.hw_btn.clicked.connect(self.open_add_hardware_form)
-            btn_row.addWidget(self.hw_btn)
+            self.add_hw_btn = QPushButton("Add Hardware to Employee")
+            self.add_hw_btn.clicked.connect(self.open_add_hardware_form)
+            btn_row.addWidget(self.add_hw_btn)
 
-            self.sw_btn = QPushButton("Add Software Asset")
-            self.sw_btn.clicked.connect(self.open_add_software_form)
-            btn_row.addWidget(self.sw_btn)
+            self.add_sw_btn = QPushButton("Add Software Asset")
+            self.add_sw_btn.clicked.connect(self.open_add_software_form)
+            btn_row.addWidget(self.add_sw_btn)
+
+            self.manage_sw_btn = QPushButton("Manage Software")
+            self.manage_sw_btn.clicked.connect(self.open_software_management)
+            btn_row.addWidget(self.manage_sw_btn)
 
             layout.addLayout(btn_row)
 
         self.setLayout(layout)
+
+    def open_software_management(self):
+        self.sw_table = SoftwareAssetTable(self.db)
+        self.sw_table.show()
 
     def open_add_employee_form(self):
         self.add_form = AddEmployeeForm(self.db)
