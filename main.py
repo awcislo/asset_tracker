@@ -38,11 +38,11 @@ class AssetTrackerDB:
 
     def verify_user(self, email, password):
         cursor = self.conn.cursor()
-        cursor.execute("SELECT password, department FROM employees WHERE email=%s", (email,))
+        cursor.execute("SELECT id, password, department FROM employees WHERE email=%s", (email,))
         row = cursor.fetchone()
-        if row and bcrypt.checkpw(password.encode(), row[0].encode()):
-            return row[1]  # department
-        return None
+        if row and bcrypt.checkpw(password.encode(), row[1].encode()):
+            return row[0], row[2]  # user_id and department
+        return None, None
 
     def add_employee(self, first_name, last_name, email, password, department):
         hashed_pw = bcrypt.hashpw(password.encode(), bcrypt.gensalt())
@@ -61,54 +61,23 @@ class AssetTrackerDB:
         cursor.execute("SELECT system_name, model, manufacturer FROM hardware_assets WHERE employee_id=%s", (emp_id,))
         return cursor.fetchall()
 
-def get_hardware_info():
-    return {
-        "system_name": platform.node(),
-        "model": platform.machine(),
-        "manufacturer": platform.system(),
-        "asset_type": "PC",
-        "ip_address": socket.gethostbyname(socket.gethostname())
-    }
+    def get_software_for_employee(self, emp_id):
+        cursor = self.conn.cursor()
+        cursor.execute("""
+            SELECT sa.os_name, sa.version FROM software_assets sa
+            JOIN asset_links al ON sa.id = al.software_id
+            JOIN hardware_assets ha ON ha.id = al.hardware_id
+            WHERE ha.employee_id = %s
+        """, (emp_id,))
+        return cursor.fetchall()
+    def add_hardware_asset(self, sysname, model, manufacturer, asset_type, ip_address, purchase_date, note, employee_id):
+        cursor = self.conn.cursor()
+        cursor.execute("""
+            INSERT INTO hardware_assets (system_name, model, manufacturer, asset_type, ip_address, purchase_date, note, employee_id)
+            VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
+        """, (sysname, model, manufacturer, asset_type, ip_address, purchase_date, note, employee_id))
+        self.conn.commit()
 
-def get_software_info():
-    return {
-        "os_name": platform.system(),
-        "version": platform.version(),
-        "manufacturer": platform.platform()
-    }
-
-class LoginWindow(QWidget):
-
-    def __init__(self, db):
-        super().__init__()
-        self.db = db
-        self.setWindowTitle("Login")
-        self.init_ui()
-
-    def init_ui(self):
-        layout = QVBoxLayout()
-        self.email_input = QLineEdit(self)
-        self.email_input.setPlaceholderText("Email")
-        self.password_input = QLineEdit(self)
-        self.password_input.setPlaceholderText("Password")
-        self.password_input.setEchoMode(QLineEdit.Password)
-        login_btn = QPushButton("Login", self)
-        login_btn.clicked.connect(self.login)
-        layout.addWidget(self.email_input)
-        layout.addWidget(self.password_input)
-        layout.addWidget(login_btn)
-        self.setLayout(layout)
-
-    def login(self):
-        email = self.email_input.text()
-        password = self.password_input.text()
-        department = self.db.verify_user(email, password)
-        if department:
-            self.main_window = MainWindow(self.db, email, department)
-            self.main_window.show()
-            self.close()
-        else:
-            QMessageBox.warning(self, "Error", "Invalid credentials")
 class AddEmployeeForm(QWidget):
     def __init__(self, db):
         super().__init__()
@@ -163,50 +132,7 @@ class AddEmployeeForm(QWidget):
         self.db.add_employee(fn, ln, email, pwd, dept)
         QMessageBox.information(self, "Success", f"Employee '{fn} {ln}' added.")
         self.close()
-class MainWindow(QMainWindow):
-    def __init__(self, db, user_email, department):
-        super().__init__()
-        self.db = db
-        self.user_email = user_email
-        self.department = department
-        self.setWindowTitle(f"Asset Tracker - {user_email} ({department})")
-        self.init_ui()
-
-    def init_ui(self):
-        central = QWidget()
-        layout = QVBoxLayout()
-        hw_btn = QPushButton("Capture Hardware Info")
-        sw_btn = QPushButton("Capture Software Info")
-        add_hw_btn = QPushButton("Add Hardware Asset")
-        emp_btn = QPushButton("Manage Employees")
-        hw_btn.clicked.connect(self.capture_hw)
-        sw_btn.clicked.connect(self.capture_sw)
-        add_hw_btn.clicked.connect(self.open_add_hardware_form)
-        emp_btn.clicked.connect(self.open_employee_form)
-        layout.addWidget(hw_btn)
-        layout.addWidget(sw_btn)
-        layout.addWidget(add_hw_btn)
-        layout.addWidget(emp_btn)
-        central.setLayout(layout)
-        self.setCentralWidget(central)
-
-    def capture_hw(self):
-        info = get_hardware_info()
-        QMessageBox.information(self, "Hardware Info", str(info))
-
-    def capture_sw(self):
-        info = get_software_info()
-        QMessageBox.information(self, "Software Info", str(info))
-
-    def open_add_hardware_form(self):
-        self.hw_form = AddHardwareAssetForm(self.db)
-        self.hw_form.show()
-        
-    def open_employee_form(self):
-        self.emp_form = AddEmployeeForm(self.db)
-        self.emp_form.show()
 class AddHardwareAssetForm(QWidget):
-    
     def __init__(self, db):
         super().__init__()
         self.db = db
@@ -228,7 +154,7 @@ class AddHardwareAssetForm(QWidget):
 
         self.employee_dropdown = QComboBox()
         self.employee_map = {}
-        for emp_id, fname, lname in self.db.get_employees():
+        for emp_id, fname, lname, _, _ in self.db.get_employees():
             label = f"{fname} {lname}"
             self.employee_dropdown.addItem(label)
             self.employee_map[label] = emp_id
@@ -265,42 +191,152 @@ class AddHardwareAssetForm(QWidget):
         )
         QMessageBox.information(self, "Success", "Hardware asset recorded.")
         self.close()
+        
 class EmployeeMonitor(QWidget):
-    def __init__(self, db):
+    def __init__(self, db, department):
         super().__init__()
         self.db = db
+        self.department = department
         self.setWindowTitle("Employee Monitor")
         self.init_ui()
 
     def init_ui(self):
         layout = QVBoxLayout()
         self.table = QTableWidget()
-        self.table.setColumnCount(5)
-        self.table.setHorizontalHeaderLabels(["ID", "Name", "Email", "Department", "Assets"])
+        self.table.setColumnCount(6)
+        self.table.setHorizontalHeaderLabels(["ID", "Name", "Email", "Department", "Hardware Assets", "Software Assets"])
 
         employees = self.db.get_employees()
         self.table.setRowCount(len(employees))
 
         for i, (emp_id, fname, lname, email, dept) in enumerate(employees):
             full_name = f"{fname} {lname}"
-            assets = self.db.get_assets_for_employee(emp_id)
-            asset_info = "; ".join([f"{a[0]} - {a[1]}" for a in assets]) if assets else "None"
+            hw_assets = self.db.get_assets_for_employee(emp_id)
+            sw_assets = self.db.get_software_for_employee(emp_id)
+            hw_info = "; ".join([f"{a[0]} - {a[1]}" for a in hw_assets]) if hw_assets else "None"
+            sw_info = "; ".join([f"{a[0]} {a[1]}" for a in sw_assets]) if sw_assets else "None"
 
             self.table.setItem(i, 0, QTableWidgetItem(str(emp_id)))
             self.table.setItem(i, 1, QTableWidgetItem(full_name))
             self.table.setItem(i, 2, QTableWidgetItem(email))
             self.table.setItem(i, 3, QTableWidgetItem(dept))
-            self.table.setItem(i, 4, QTableWidgetItem(asset_info))
+            self.table.setItem(i, 4, QTableWidgetItem(hw_info))
+            self.table.setItem(i, 5, QTableWidgetItem(sw_info))
 
         layout.addWidget(self.table)
-        self.setLayout(layout)
-        
-if __name__ == '__main__':
 
+        if self.department.lower() == "information technology":
+            self.add_btn = QPushButton("Add Employee")
+            self.add_btn.clicked.connect(self.open_add_employee_form)
+            self.hw_btn = QPushButton("Add Hardware to Employee")
+            self.hw_btn.clicked.connect(self.open_add_hardware_form)
+            layout.addWidget(self.add_btn)
+            layout.addWidget(self.hw_btn)
+
+        self.setLayout(layout)
+
+    def open_add_employee_form(self):
+        self.add_form = AddEmployeeForm(self.db)
+        self.add_form.show()
+          
+    def open_add_hardware_form(self):
+        self.hw_form = AddHardwareAssetForm(self.db)
+        self.hw_form.show()
+
+class MainWindow(QMainWindow):
+    def __init__(self, db, user_id, department):
+        super().__init__()
+        self.db = db
+        self.user_id = user_id
+        self.department = department
+        self.setWindowTitle("Asset Tracker Dashboard")
+        self.init_ui()
+
+    def init_ui(self):
+        central = QWidget()
+        layout = QVBoxLayout()
+
+        hw_btn = QPushButton("Capture Hardware Info")
+        sw_btn = QPushButton("Capture Software Info")
+        add_hw_btn = QPushButton("Add Hardware Asset")
+
+        layout.addWidget(hw_btn)
+        layout.addWidget(sw_btn)
+        layout.addWidget(add_hw_btn)
+
+        hw_btn.clicked.connect(lambda: QMessageBox.information(self, "Hardware Info", str(get_hardware_info())))
+        sw_btn.clicked.connect(lambda: QMessageBox.information(self, "Software Info", str(get_software_info())))
+        add_hw_btn.clicked.connect(lambda: QMessageBox.information(self, "Add Asset", "This would open the asset form"))
+
+        if self.department.lower() == "information technology":
+            emp_btn = QPushButton("Open Employee Monitor")
+            emp_btn.clicked.connect(self.open_monitor)
+            layout.addWidget(emp_btn)
+
+        central.setLayout(layout)
+        self.setCentralWidget(central)
+
+    def open_monitor(self):
+        self.monitor = EmployeeMonitor(self.db, self.department)
+        self.monitor.show()
+
+class LoginWindow(QWidget):
+    def __init__(self, db):
+        super().__init__()
+        self.db = db
+        self.setWindowTitle("Login")
+        self.init_ui()
+
+    def init_ui(self):
+        layout = QVBoxLayout()
+        self.email_input = QLineEdit()
+        self.email_input.setPlaceholderText("Email")
+        self.password_input = QLineEdit()
+        self.password_input.setPlaceholderText("Password")
+        self.password_input.setEchoMode(QLineEdit.Password)
+        login_btn = QPushButton("Login")
+        login_btn.clicked.connect(self.login)
+
+        layout.addWidget(self.email_input)
+        layout.addWidget(self.password_input)
+        layout.addWidget(login_btn)
+        self.setLayout(layout)
+
+    def login(self):
+        email = self.email_input.text()
+        password = self.password_input.text()
+        user_id, department = self.db.verify_user(email, password)
+        if department:
+            self.window = MainWindow(self.db, user_id, department)
+            self.window.show()
+            self.close()
+        else:
+            QMessageBox.warning(self, "Login Failed", "Invalid email or password.")
+
+def get_hardware_info():
+    return {
+        "system_name": platform.node(),
+        "model": platform.machine(),
+        "manufacturer": platform.system(),
+        "asset_type": "PC",
+        "ip_address": socket.gethostbyname(socket.gethostname())
+    }
+
+def get_software_info():
+    return {
+        "os_name": platform.system(),
+        "version": platform.version(),
+        "manufacturer": platform.platform()
+    }
+
+if __name__ == '__main__':
     app = QApplication(sys.argv)
     db = AssetTrackerDB()
+
     login = LoginWindow(db)
     login.show()
+
     sys.exit(app.exec_())
+
 
 
