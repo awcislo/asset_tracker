@@ -51,11 +51,22 @@ class AssetTrackerDB:
             return row[1]
         return None
 
-    def add_hardware_asset(self, info, purchase_date, note):
+    def add_employee(self, first_name, last_name, email):
+        cursor = self.conn.cursor()
+        cursor.execute("INSERT INTO employees (first_name, last_name, email) VALUES (%s, %s, %s)",
+                       (first_name, last_name, email))
+        self.conn.commit()
+
+    def get_employees(self):
+        cursor = self.conn.cursor()
+        cursor.execute("SELECT id, first_name, last_name FROM employees")
+        return cursor.fetchall()
+
+    def add_hardware_asset(self, info, purchase_date, note, employee_id):
         cursor = self.conn.cursor()
         cursor.execute("""
-            INSERT INTO hardware_assets (system_name, model, manufacturer, asset_type, ip_address, purchase_date, note)
-            VALUES (%s, %s, %s, %s, %s, %s, %s)
+            INSERT INTO hardware_assets (system_name, model, manufacturer, asset_type, ip_address, purchase_date, note, employee_id)
+            VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
         """, (
             info['system_name'],
             info['model'],
@@ -63,10 +74,10 @@ class AssetTrackerDB:
             info['asset_type'],
             info['ip_address'],
             purchase_date,
-            note
+            note,
+            employee_id
         ))
         self.conn.commit()
-
 
 def get_hardware_info():
     return {
@@ -115,6 +126,61 @@ class LoginWindow(QWidget):
             self.close()
         else:
             QMessageBox.warning(self, "Error", "Invalid credentials")
+class AddEmployeeForm(QWidget):
+    def __init__(self, db):
+        super().__init__()
+        self.db = db
+        self.setWindowTitle("Manage Employees")
+        self.init_ui()
+
+    def init_ui(self):
+        layout = QVBoxLayout()
+        self.first_input = QLineEdit()
+        self.first_input.setPlaceholderText("First Name")
+        self.last_input = QLineEdit()
+        self.last_input.setPlaceholderText("Last Name")
+        self.email_input = QLineEdit()
+        self.email_input.setPlaceholderText("Email")
+        add_btn = QPushButton("Add Employee")
+        add_btn.clicked.connect(self.save_employee)
+
+        self.table = QTableWidget()
+        self.table.setColumnCount(3)
+        self.table.setHorizontalHeaderLabels(["ID", "Name", "Email"])
+        self.load_employees()
+
+        layout.addWidget(QLabel("First Name:"))
+        layout.addWidget(self.first_input)
+        layout.addWidget(QLabel("Last Name:"))
+        layout.addWidget(self.last_input)
+        layout.addWidget(QLabel("Email:"))
+        layout.addWidget(self.email_input)
+        layout.addWidget(add_btn)
+        layout.addWidget(QLabel("Existing Employees:"))
+        layout.addWidget(self.table)
+        self.setLayout(layout)
+
+    def save_employee(self):
+        fn = self.first_input.text()
+        ln = self.last_input.text()
+        email = self.email_input.text()
+        if fn and ln and email:
+            self.db.add_employee(fn, ln, email)
+            QMessageBox.information(self, "Success", "Employee added!")
+            self.first_input.clear()
+            self.last_input.clear()
+            self.email_input.clear()
+            self.load_employees()
+        else:
+            QMessageBox.warning(self, "Missing Info", "Please fill all fields.")
+
+    def load_employees(self):
+        employees = self.db.get_employees()
+        self.table.setRowCount(len(employees))
+        for row_idx, (emp_id, fname, lname) in enumerate(employees):
+            self.table.setItem(row_idx, 0, QTableWidgetItem(str(emp_id)))
+            self.table.setItem(row_idx, 1, QTableWidgetItem(f"{fname} {lname}"))
+            self.table.setItem(row_idx, 2, QTableWidgetItem(""))
 
 class MainWindow(QMainWindow):
     def __init__(self, db, user_email, department):
@@ -131,12 +197,15 @@ class MainWindow(QMainWindow):
         hw_btn = QPushButton("Capture Hardware Info")
         sw_btn = QPushButton("Capture Software Info")
         add_hw_btn = QPushButton("Add Hardware Asset")
+        emp_btn = QPushButton("Manage Employees")
         hw_btn.clicked.connect(self.capture_hw)
         sw_btn.clicked.connect(self.capture_sw)
         add_hw_btn.clicked.connect(self.open_add_hardware_form)
+        emp_btn.clicked.connect(self.open_employee_form)
         layout.addWidget(hw_btn)
         layout.addWidget(sw_btn)
         layout.addWidget(add_hw_btn)
+        layout.addWidget(emp_btn)
         central.setLayout(layout)
         self.setCentralWidget(central)
 
@@ -151,6 +220,11 @@ class MainWindow(QMainWindow):
     def open_add_hardware_form(self):
         self.hw_form = AddHardwareAssetForm(self.db)
         self.hw_form.show()
+        
+    def open_employee_form(self):
+        self.emp_form = AddEmployeeForm(self.db)
+        self.emp_form.show()
+
 
 class AddHardwareAssetForm(QWidget):
     def __init__(self, db):
@@ -166,6 +240,14 @@ class AddHardwareAssetForm(QWidget):
         self.purchase_input = QDateEdit(calendarPopup=True)
         self.purchase_input.setDate(QDate.currentDate())
         self.note_input = QTextEdit()
+        self.employee_dropdown = QComboBox()
+
+        employees = self.db.get_employees()
+        self.employee_map = {}
+        for emp_id, fname, lname in employees:
+            label = f"{fname} {lname}"
+            self.employee_dropdown.addItem(label)
+            self.employee_map[label] = emp_id
 
         save_btn = QPushButton("Save Asset")
         save_btn.clicked.connect(self.save_asset)
@@ -178,13 +260,17 @@ class AddHardwareAssetForm(QWidget):
         layout.addWidget(self.purchase_input)
         layout.addWidget(QLabel("Note:"))
         layout.addWidget(self.note_input)
+        layout.addWidget(QLabel("Assign to Employee:"))
+        layout.addWidget(self.employee_dropdown)
         layout.addWidget(save_btn)
         self.setLayout(layout)
 
     def save_asset(self):
         purchase_date = self.purchase_input.date().toPyDate()
         note = self.note_input.toPlainText()
-        self.db.add_hardware_asset(self.info, purchase_date, note)
+        employee_name = self.employee_dropdown.currentText()
+        employee_id = self.employee_map.get(employee_name)
+        self.db.add_hardware_asset(self.info, purchase_date, note, employee_id)
         QMessageBox.information(self, "Saved", "Hardware asset added successfully!")
         self.close()
 
@@ -194,3 +280,5 @@ if __name__ == '__main__':
     login = LoginWindow(db)
     login.show()
     sys.exit(app.exec_())
+
+
