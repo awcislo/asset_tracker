@@ -127,7 +127,51 @@ class AssetTrackerDB:
         cursor.execute("DELETE FROM asset_links WHERE software_id=%s", (software_id,))
         cursor.execute("INSERT INTO asset_links (hardware_id, software_id, link_date) VALUES (%s, %s, NOW())", (hardware_id, software_id))
         self.conn.commit()
+# Employees CRUD (added delete, update)
+    def update_employee(self, emp_id, fname, lname, email):
+        cursor = self.conn.cursor()
+        cursor.execute(
+            "UPDATE employees SET first_name=%s, last_name=%s, email=%s WHERE id=%s",
+            (fname, lname, email, emp_id))
+        self.conn.commit()
 
+    def can_delete_employee(self, emp_id):
+        cursor = self.conn.cursor()
+        cursor.execute("SELECT COUNT(*) FROM hardware_assets WHERE employee_id=%s", (emp_id,))
+        return cursor.fetchone()[0] == 0
+
+    def delete_employee(self, emp_id):
+        cursor = self.conn.cursor()
+        cursor.execute("DELETE FROM employees WHERE id=%s", (emp_id,))
+        self.conn.commit()
+
+    # Hardware CRUD
+    def get_hardware_assets(self):
+        cursor = self.conn.cursor()
+        cursor.execute("""
+            SELECT id, system_name, model, manufacturer, asset_type, ip_address, purchase_date, note, employee_id
+            FROM hardware_assets
+        """)
+        return cursor.fetchall()
+
+    def update_hardware_asset(self, hw_id, sysname, model, manufacturer, asset_type, ip_address, purchase_date, note, employee_id):
+        cursor = self.conn.cursor()
+        cursor.execute("""
+            UPDATE hardware_assets
+            SET system_name=%s, model=%s, manufacturer=%s, asset_type=%s, ip_address=%s, purchase_date=%s, note=%s, employee_id=%s
+            WHERE id=%s
+        """, (sysname, model, manufacturer, asset_type, ip_address, purchase_date, note, employee_id, hw_id))
+        self.conn.commit()
+
+    def can_delete_hardware(self, hw_id):
+        cursor = self.conn.cursor()
+        cursor.execute("SELECT COUNT(*) FROM asset_links WHERE hardware_id=%s", (hw_id,))
+        return cursor.fetchone()[0] == 0
+
+    def delete_hardware_asset(self, hw_id):
+        cursor = self.conn.cursor()
+        cursor.execute("DELETE FROM hardware_assets WHERE id=%s", (hw_id,))
+        self.conn.commit()
 
 class AddSoftwareAssetForm(QWidget):
     def __init__(self, db, edit_asset=None, refresh_callback=None):
@@ -204,6 +248,96 @@ class AddSoftwareAssetForm(QWidget):
             self.refresh_callback()
         self.close()
 
+class EditEmployeeForm(QWidget):
+
+    def __init__(self, db, employee, refresh_callback=None):
+        super().__init__()
+        self.db = db
+        self.employee = employee
+        self.refresh_callback = refresh_callback
+        self.setWindowTitle("Edit Employee")
+        self.init_ui()
+
+    def init_ui(self):
+        layout = QVBoxLayout()
+        self.first_input = QLineEdit(self.employee[1])
+        self.last_input = QLineEdit(self.employee[2])
+        self.email_input = QLineEdit(self.employee[3])
+        self.dept_label = QLabel(self.employee[4])
+        save_btn = QPushButton("Save")
+        save_btn.clicked.connect(self.save_employee)
+        layout.addWidget(QLabel("First Name:")); layout.addWidget(self.first_input)
+        layout.addWidget(QLabel("Last Name:")); layout.addWidget(self.last_input)
+        layout.addWidget(QLabel("Email:")); layout.addWidget(self.email_input)
+        layout.addWidget(QLabel("Department:")); layout.addWidget(self.dept_label)
+        layout.addWidget(save_btn)
+        self.setLayout(layout)
+
+    def save_employee(self):
+        fn = self.first_input.text().strip()
+        ln = self.last_input.text().strip()
+        email = self.email_input.text().strip()
+        if not all([fn, ln, email]):
+            QMessageBox.warning(self, "Incomplete", "Please complete all fields.")
+            return
+        self.db.update_employee(self.employee[0], fn, ln, email)
+        QMessageBox.information(self, "Success", "Employee updated.")
+        if self.refresh_callback:
+            self.refresh_callback()
+        self.close()
+
+class EditHardwareAssetForm(QWidget):
+    def __init__(self, db, hw_asset, refresh_callback=None):
+        super().__init__()
+        self.db = db
+        self.hw_asset = hw_asset
+        self.refresh_callback = refresh_callback
+        self.setWindowTitle("Edit Hardware Asset")
+        self.init_ui()
+
+    def init_ui(self):
+        layout = QVBoxLayout()
+        self.sysname_input = QLineEdit(self.hw_asset[1])
+        self.model_input = QLineEdit(self.hw_asset[2])
+        self.manufacturer_input = QLineEdit(self.hw_asset[3])
+        self.asset_type_input = QLineEdit(self.hw_asset[4])
+        self.ip_input = QLineEdit(self.hw_asset[5])
+        self.date_input = QDateEdit(calendarPopup=True)
+        self.date_input.setDate(self.hw_asset[6])
+        self.note_input = QTextEdit(self.hw_asset[7])
+        self.employee_dropdown = QComboBox()
+        self.employee_map = {}
+        for emp_id, fname, lname, _, _ in self.db.get_employees():
+            label = f"{fname} {lname}"
+            self.employee_dropdown.addItem(label)
+            self.employee_map[label] = emp_id
+        for label, eid in self.employee_map.items():
+            if eid == self.hw_asset[8]:
+                self.employee_dropdown.setCurrentText(label)
+        save_btn = QPushButton("Save")
+        save_btn.clicked.connect(self.save_hw)
+        layout.addWidget(QLabel("System Name:")); layout.addWidget(self.sysname_input)
+        layout.addWidget(QLabel("Model:")); layout.addWidget(self.model_input)
+        layout.addWidget(QLabel("Manufacturer:")); layout.addWidget(self.manufacturer_input)
+        layout.addWidget(QLabel("Asset Type:")); layout.addWidget(self.asset_type_input)
+        layout.addWidget(QLabel("IP Address:")); layout.addWidget(self.ip_input)
+        layout.addWidget(QLabel("Purchase Date:")); layout.addWidget(self.date_input)
+        layout.addWidget(QLabel("Note:")); layout.addWidget(self.note_input)
+        layout.addWidget(QLabel("Assign to Employee:")); layout.addWidget(self.employee_dropdown)
+        layout.addWidget(save_btn)
+        self.setLayout(layout)
+
+    def save_hw(self):
+        eid = self.employee_map[self.employee_dropdown.currentText()]
+        self.db.update_hardware_asset(
+            self.hw_asset[0], self.sysname_input.text(), self.model_input.text(), self.manufacturer_input.text(),
+            self.asset_type_input.text(), self.ip_input.text(), self.date_input.date().toPyDate(),
+            self.note_input.toPlainText(), eid
+        )
+        QMessageBox.information(self, "Success", "Hardware asset updated.")
+        if self.refresh_callback:
+            self.refresh_callback()
+        self.close()
 
 class SoftwareAssetTable(QWidget):
     def __init__(self, db):
@@ -433,69 +567,95 @@ class EmployeeMonitor(QWidget):
 
     def init_ui(self):
         layout = QVBoxLayout()
-        self.table = QTableWidget()
-        self.table.setColumnCount(6)
-        self.table.setHorizontalHeaderLabels([
-            "ID", "Name", "Email", "Department", "Hardware Assets", "Software Assets"
-        ])
-
+        # EMPLOYEES
+        self.emp_table = QTableWidget()
         employees = self.db.get_employees()
-        self.table.setRowCount(len(employees))
-
+        self.emp_table.setColumnCount(8)
+        self.emp_table.setRowCount(len(employees))
+        self.emp_table.setHorizontalHeaderLabels([
+            "ID", "Name", "Email", "Department", "Hardware Assets", "Software Assets", "Edit", "Delete"
+        ])
         for i, (emp_id, fname, lname, email, dept) in enumerate(employees):
             full_name = f"{fname} {lname}"
             hw_assets = self.db.get_assets_for_employee(emp_id)
             sw_assets = self.db.get_software_for_employee(emp_id)
             hw_info = "; ".join([f"{a[0]} - {a[1]}" for a in hw_assets]) if hw_assets else "None"
             sw_info = "; ".join([f"{a[0]} {a[1]}" for a in sw_assets]) if sw_assets else "None"
+            self.emp_table.setItem(i, 0, QTableWidgetItem(str(emp_id)))
+            self.emp_table.setItem(i, 1, QTableWidgetItem(full_name))
+            self.emp_table.setItem(i, 2, QTableWidgetItem(email))
+            self.emp_table.setItem(i, 3, QTableWidgetItem(dept))
+            self.emp_table.setItem(i, 4, QTableWidgetItem(hw_info))
+            self.emp_table.setItem(i, 5, QTableWidgetItem(sw_info))
+            # Edit
+            edit_btn = QPushButton("Edit")
+            edit_btn.clicked.connect(lambda _, e=(emp_id, fname, lname, email, dept): self.open_edit_employee(e))
+            self.emp_table.setCellWidget(i, 6, edit_btn)
+            # Delete
+            del_btn = QPushButton("Delete")
+            del_btn.clicked.connect(lambda _, eid=emp_id: self.delete_employee(eid))
+            self.emp_table.setCellWidget(i, 7, del_btn)
+        layout.addWidget(QLabel("Employees:"))
+        layout.addWidget(self.emp_table)
 
-            self.table.setItem(i, 0, QTableWidgetItem(str(emp_id)))
-            self.table.setItem(i, 1, QTableWidgetItem(full_name))
-            self.table.setItem(i, 2, QTableWidgetItem(email))
-            self.table.setItem(i, 3, QTableWidgetItem(dept))
-            self.table.setItem(i, 4, QTableWidgetItem(hw_info))
-            self.table.setItem(i, 5, QTableWidgetItem(sw_info))
-
-        layout.addWidget(self.table)
-
-        if self.department.lower() == "information technology":
-            btn_row = QHBoxLayout()
-
-            self.add_emp_btn = QPushButton("Add Employee")
-            self.add_emp_btn.clicked.connect(self.open_add_employee_form)
-            btn_row.addWidget(self.add_emp_btn)
-
-            self.add_hw_btn = QPushButton("Add Hardware to Employee")
-            self.add_hw_btn.clicked.connect(self.open_add_hardware_form)
-            btn_row.addWidget(self.add_hw_btn)
-
-            self.add_sw_btn = QPushButton("Add Software Asset")
-            self.add_sw_btn.clicked.connect(self.open_add_software_form)
-            btn_row.addWidget(self.add_sw_btn)
-
-            self.manage_sw_btn = QPushButton("Manage Software")
-            self.manage_sw_btn.clicked.connect(self.open_software_management)
-            btn_row.addWidget(self.manage_sw_btn)
-
-            layout.addLayout(btn_row)
+        # HARDWARE
+        self.hw_table = QTableWidget()
+        hw_assets = self.db.get_hardware_assets()
+        self.hw_table.setColumnCount(11)
+        self.hw_table.setRowCount(len(hw_assets))
+        self.hw_table.setHorizontalHeaderLabels([
+            "ID", "System Name", "Model", "Manufacturer", "Type", "IP", "Date", "Note", "Employee", "Edit", "Delete"
+        ])
+        emp_map = {e[0]: f"{e[1]} {e[2]}" for e in employees}
+        for i, asset in enumerate(hw_assets):
+            for col in range(9):
+                if col == 8:
+                    emp_name = emp_map.get(asset[8], "None")
+                    self.hw_table.setItem(i, 8, QTableWidgetItem(emp_name))
+                else:
+                    self.hw_table.setItem(i, col, QTableWidgetItem(str(asset[col])))
+            # Edit
+            edit_btn = QPushButton("Edit")
+            edit_btn.clicked.connect(lambda _, a=asset: self.open_edit_hardware(a))
+            self.hw_table.setCellWidget(i, 9, edit_btn)
+            # Delete
+            del_btn = QPushButton("Delete")
+            del_btn.clicked.connect(lambda _, aid=asset[0]: self.delete_hardware(aid))
+            self.hw_table.setCellWidget(i, 10, del_btn)
+        layout.addWidget(QLabel("Hardware:"))
+        layout.addWidget(self.hw_table)
 
         self.setLayout(layout)
 
-    def open_software_management(self):
-        self.sw_table = SoftwareAssetTable(self.db)
-        self.sw_table.show()
+    def open_edit_employee(self, employee):
+        self.edit_emp_form = EditEmployeeForm(self.db, employee, refresh_callback=self.refresh_all)
+        self.edit_emp_form.show()
 
-    def open_add_employee_form(self):
-        self.add_form = AddEmployeeForm(self.db)
-        self.add_form.show()
+    def delete_employee(self, emp_id):
+        if not self.db.can_delete_employee(emp_id):
+            QMessageBox.warning(self, "Error", "Cannot delete employee; hardware assigned.")
+            return
+        confirm = QMessageBox.question(self, "Delete", "Are you sure you want to delete this employee?", QMessageBox.Yes | QMessageBox.No)
+        if confirm == QMessageBox.Yes:
+            self.db.delete_employee(emp_id)
+            self.refresh_all()
 
-    def open_add_hardware_form(self):
-        self.hw_form = AddHardwareAssetForm(self.db)
-        self.hw_form.show()
+    def open_edit_hardware(self, hw_asset):
+        self.edit_hw_form = EditHardwareAssetForm(self.db, hw_asset, refresh_callback=self.refresh_all)
+        self.edit_hw_form.show()
 
-    def open_add_software_form(self):
-        self.sw_form = AddSoftwareAssetForm(self.db)
-        self.sw_form.show()
+    def delete_hardware(self, hw_id):
+        if not self.db.can_delete_hardware(hw_id):
+            QMessageBox.warning(self, "Error", "Cannot delete hardware; software linked.")
+            return
+        confirm = QMessageBox.question(self, "Delete", "Are you sure you want to delete this hardware asset?", QMessageBox.Yes | QMessageBox.No)
+        if confirm == QMessageBox.Yes:
+            self.db.delete_hardware_asset(hw_id)
+            self.refresh_all()
+
+    def refresh_all(self):
+        self.init_ui()
+
 
 
 class MainWindow(QMainWindow):
