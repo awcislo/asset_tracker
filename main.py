@@ -9,7 +9,8 @@ from mysql.connector import Error
 from datetime import datetime
 from PyQt5.QtWidgets import (QApplication, QMainWindow, QWidget, QLabel, QLineEdit, QPushButton,
                              QVBoxLayout, QHBoxLayout, QMessageBox, QTableWidget, QTableWidgetItem,
-                             QComboBox, QTextEdit, QDateEdit)
+                             QComboBox, QTextEdit, QDateEdit, QInputDialog)
+
 from PyQt5.QtCore import QDate
 
 DB_HOST = "lochnagar.abertay.ac.uk"
@@ -181,6 +182,50 @@ class AddEmployeeForm(QWidget):
             self.table.setItem(row_idx, 0, QTableWidgetItem(str(emp_id)))
             self.table.setItem(row_idx, 1, QTableWidgetItem(f"{fname} {lname}"))
             self.table.setItem(row_idx, 2, QTableWidgetItem(""))
+
+            delete_btn = QPushButton("Delete")
+            delete_btn.clicked.connect(lambda _, eid=emp_id: self.delete_employee(eid))
+            self.table.setCellWidget(row_idx, 2, delete_btn)
+
+    def delete_employee(self, emp_id):
+        cursor = self.db.conn.cursor()
+        cursor.execute("SELECT COUNT(*) FROM hardware_assets WHERE employee_id = %s", (emp_id,))
+        count = cursor.fetchone()[0]
+        if count > 0:
+            QMessageBox.warning(self, "Cannot Delete", f"Employee ID {emp_id} is linked to existing assets.")
+            return
+
+        confirm = QMessageBox.question(self, "Confirm", f"Delete employee ID {emp_id}?", QMessageBox.Yes | QMessageBox.No)
+        if confirm == QMessageBox.Yes:
+            cursor.execute("DELETE FROM employees WHERE id = %s", (emp_id,))
+            self.db.conn.commit()
+            self.load_employees()
+
+    def mouseDoubleClickEvent(self, event):
+        row = self.table.currentRow()
+        if row >= 0:
+            emp_id = self.table.item(row, 0).text()
+            fname, lname = self.table.item(row, 1).text().split()
+            email, ok = QInputDialog.getText(self, "Edit Email", "New Email:")
+            if ok:
+                cursor = self.db.conn.cursor()
+                cursor.execute("UPDATE employees SET email=%s WHERE id=%s", (email, emp_id))
+                self.db.conn.commit()
+                self.load_employees()
+
+    def contextMenuEvent(self, event):
+        row = self.table.currentRow()
+        if row >= 0:
+            emp_id = self.table.item(row, 0).text()
+            cursor = self.db.conn.cursor()
+            cursor.execute("SELECT * FROM hardware_assets WHERE employee_id=%s", (emp_id,))
+            assets = cursor.fetchall()
+            if assets:
+                msg = "\n\n".join([f"{a[0]}: {a[1]} ({a[5]})" for a in assets])
+                QMessageBox.information(self, "Assigned Assets", msg)
+            else:
+                QMessageBox.information(self, "Assigned Assets", "No hardware assets found for this employee.")
+
 
 class MainWindow(QMainWindow):
     def __init__(self, db, user_email, department):
