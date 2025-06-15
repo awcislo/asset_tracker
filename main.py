@@ -23,18 +23,17 @@ class AssetTrackerDB:
         self.conn = self.create_connection()
 
     def create_connection(self):
+        import mysql.connector
+        from mysql.connector import Error
         try:
-            connection = mysql.connector.connect(
-                host=DB_HOST,
-                user=DB_USER,
-                password=DB_PASSWORD,
-                database=DB_NAME
+            return mysql.connector.connect(
+                host="lochnagar.abertay.ac.uk",
+                user="sql2000112",
+                password="HNrxPQcepV96",
+                database="sql2000112"
             )
-            if connection.is_connected():
-                print("Connected to MySQL database successfully.")
-                return connection
         except Error as e:
-            print(f"Error while connecting to MySQL: {e}")
+            print("Connection error:", e)
             return None
 
     def verify_user(self, email, password):
@@ -42,29 +41,25 @@ class AssetTrackerDB:
         cursor.execute("SELECT password, department FROM employees WHERE email=%s", (email,))
         row = cursor.fetchone()
         if row and bcrypt.checkpw(password.encode(), row[0].encode()):
-            return row[1]
+            return row[1]  # department
         return None
 
     def add_employee(self, first_name, last_name, email, password, department):
-        hashed_pw = bcrypt.hashpw(password.encode(), bcrypt.gensalt()).decode()
+        hashed_pw = bcrypt.hashpw(password.encode(), bcrypt.gensalt())
         cursor = self.conn.cursor()
         cursor.execute("INSERT INTO employees (first_name, last_name, email, password, department) VALUES (%s, %s, %s, %s, %s)",
-                       (first_name, last_name, email, hashed_pw, department))
+                       (first_name, last_name, email, hashed_pw.decode(), department))
         self.conn.commit()
-        
+
     def get_employees(self):
         cursor = self.conn.cursor()
-        cursor.execute("SELECT id, first_name, last_name FROM employees")
+        cursor.execute("SELECT id, first_name, last_name, email, department FROM employees")
         return cursor.fetchall()
 
-    def add_hardware_asset(self, system_name, model, manufacturer, asset_type, ip_address, purchase_date, note, employee_id):
+    def get_assets_for_employee(self, emp_id):
         cursor = self.conn.cursor()
-        cursor.execute("""
-            INSERT INTO hardware_assets (system_name, model, manufacturer, asset_type, ip_address, purchase_date, note, employee_id)
-            VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
-        """, (system_name, model, manufacturer, asset_type, ip_address, purchase_date, note, employee_id))
-        self.conn.commit()
-
+        cursor.execute("SELECT system_name, model, manufacturer FROM hardware_assets WHERE employee_id=%s", (emp_id,))
+        return cursor.fetchall()
 
 def get_hardware_info():
     return {
@@ -211,6 +206,7 @@ class MainWindow(QMainWindow):
         self.emp_form = AddEmployeeForm(self.db)
         self.emp_form.show()
 class AddHardwareAssetForm(QWidget):
+    
     def __init__(self, db):
         super().__init__()
         self.db = db
@@ -269,6 +265,36 @@ class AddHardwareAssetForm(QWidget):
         )
         QMessageBox.information(self, "Success", "Hardware asset recorded.")
         self.close()
+class EmployeeMonitor(QWidget):
+    def __init__(self, db):
+        super().__init__()
+        self.db = db
+        self.setWindowTitle("Employee Monitor")
+        self.init_ui()
+
+    def init_ui(self):
+        layout = QVBoxLayout()
+        self.table = QTableWidget()
+        self.table.setColumnCount(5)
+        self.table.setHorizontalHeaderLabels(["ID", "Name", "Email", "Department", "Assets"])
+
+        employees = self.db.get_employees()
+        self.table.setRowCount(len(employees))
+
+        for i, (emp_id, fname, lname, email, dept) in enumerate(employees):
+            full_name = f"{fname} {lname}"
+            assets = self.db.get_assets_for_employee(emp_id)
+            asset_info = "; ".join([f"{a[0]} - {a[1]}" for a in assets]) if assets else "None"
+
+            self.table.setItem(i, 0, QTableWidgetItem(str(emp_id)))
+            self.table.setItem(i, 1, QTableWidgetItem(full_name))
+            self.table.setItem(i, 2, QTableWidgetItem(email))
+            self.table.setItem(i, 3, QTableWidgetItem(dept))
+            self.table.setItem(i, 4, QTableWidgetItem(asset_info))
+
+        layout.addWidget(self.table)
+        self.setLayout(layout)
+        
 if __name__ == '__main__':
 
     app = QApplication(sys.argv)
