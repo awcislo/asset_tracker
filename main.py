@@ -5,10 +5,11 @@ import socket
 import bcrypt
 import mysql.connector
 from datetime import datetime
+from PyQt5.QtCore import Qt
 from PyQt5.QtWidgets import (
     QApplication, QMainWindow, QWidget, QLabel, QLineEdit, QPushButton,
     QVBoxLayout, QMessageBox, QTableWidget, QTableWidgetItem, QComboBox,
-    QTextEdit, QDateEdit, QHBoxLayout, QCheckBox
+    QTextEdit, QDateEdit, QHBoxLayout, QCheckBox, QDialog
 )
 
 DB_HOST = "lochnagar.abertay.ac.uk"
@@ -174,6 +175,63 @@ class AssetTrackerDB:
         cursor.execute("DELETE FROM hardware_assets WHERE id=%s", (hw_id,))
         self.conn.commit()
 
+def search_nvd_vulnerabilities(os_name, version):
+    # Query ALL severities using keyword search, then filter locally.
+    keyword = f"{os_name} {version}"
+    url = "https://services.nvd.nist.gov/rest/json/cves/2.0"
+    params = {
+        "keywordSearch": keyword,
+        "resultsPerPage": 20  # More results increases likelihood of hit
+    }
+    try:
+        r = requests.get(url, params=params, timeout=10)
+        if r.status_code == 200:
+            vulns = r.json().get("vulnerabilities", [])
+            # Filter for CRITICAL or HIGH
+            filtered = []
+            for v in vulns:
+                metrics = v['cve'].get('metrics', {})
+                sev = None
+                # Try CVSSv3 first
+                if 'cvssMetricV31' in metrics:
+                    sev = metrics['cvssMetricV31'][0]['cvssData']['baseSeverity']
+                elif 'cvssMetricV2' in metrics:
+                    sev = metrics['cvssMetricV2'][0]['baseSeverity']
+                if sev in ("HIGH", "CRITICAL"):
+                    filtered.append(v)
+            return filtered
+    except Exception as e:
+        print("NVD API error:", e)
+    return []
+
+
+
+
+
+class VulnerabilityDialog(QDialog):
+    def __init__(self, os_name, version):
+        super().__init__()
+        self.setWindowTitle(f"Vulnerabilities for {os_name} {version}")
+        layout = QVBoxLayout()
+        vulns = search_nvd_vulnerabilities(os_name, version)
+        if not vulns:
+            layout.addWidget(QLabel("No HIGH or CRITICAL vulnerabilities found."))
+        else:
+            table = QTableWidget(len(vulns), 4)
+            table.setHorizontalHeaderLabels(["CVE", "Description", "Published", "Severity"])
+            for i, v in enumerate(vulns):
+                cve = v['cve']['id']
+                desc = v['cve']['descriptions'][0]['value']
+                pub = v['cve']['published']
+                sev = v['cve']['metrics']['cvssMetricV31'][0]['cvssData']['baseSeverity'] \
+                      if 'cvssMetricV31' in v['cve']['metrics'] else "N/A"
+                table.setItem(i, 0, QTableWidgetItem(cve))
+                table.setItem(i, 1, QTableWidgetItem(desc[:80] + ("..." if len(desc) > 80 else "")))
+                table.setItem(i, 2, QTableWidgetItem(pub[:10]))
+                table.setItem(i, 3, QTableWidgetItem(sev))
+            layout.addWidget(table)
+        self.setLayout(layout)
+
 class AddSoftwareAssetForm(QWidget):
     def __init__(self, db, edit_asset=None, refresh_callback=None):
         super().__init__()
@@ -303,9 +361,10 @@ class EditHardwareAssetForm(QWidget):
         self.close()
 
 class SoftwareAssetTable(QWidget):
-    def __init__(self, db):
+    def __init__(self, db, user_is_it=True):  # Allow passing IT-user flag
         super().__init__()
         self.db = db
+        self.user_is_it = user_is_it
         self.setWindowTitle("Software Asset Management")
         self.init_ui()
 
@@ -321,9 +380,13 @@ class SoftwareAssetTable(QWidget):
 
     def refresh_table(self):
         data = self.db.get_software_assets()
-        self.table.setColumnCount(6)
+        col_count = 7 if self.user_is_it else 6
+        self.table.setColumnCount(col_count)
+        headers = ["ID", "Name", "Version", "Manufacturer", "Edit", "Delete"]
+        if self.user_is_it:
+            headers.append("Check Vuln")
+        self.table.setHorizontalHeaderLabels(headers)
         self.table.setRowCount(len(data))
-        self.table.setHorizontalHeaderLabels(["ID", "Name", "Version", "Manufacturer", "Edit", "Delete"])
         for row, asset in enumerate(data):
             for col in range(4):
                 self.table.setItem(row, col, QTableWidgetItem(str(asset[col])))
@@ -333,6 +396,16 @@ class SoftwareAssetTable(QWidget):
             del_btn.clicked.connect(lambda _, aid=asset[0]: self.delete_software(aid))
             self.table.setCellWidget(row, 4, edit_btn)
             self.table.setCellWidget(row, 5, del_btn)
+            if self.user_is_it:
+                vuln_btn = QPushButton("Check Vulnerabilities")
+                vuln_btn.clicked.connect(lambda _, a=asset: self.check_vulns(a))
+                self.table.setCellWidget(row, 6, vuln_btn)
+
+    def check_vulns(self, asset):
+        self.vuln_dialog = VulnerabilityDialog(asset[1], asset[2])
+        self.vuln_dialog.setWindowModality(Qt.ApplicationModal)
+        self.vuln_dialog.exec_()
+
 
     def open_add(self):
         self.form = AddSoftwareAssetForm(self.db, refresh_callback=self.refresh_table)
@@ -757,6 +830,7 @@ def get_software_info():
 
 if __name__ == '__main__':
     app = QApplication(sys.argv)
+    win = QWidget() 
     db = AssetTrackerDB()
     login = LoginWindow(db)
     login.show()
