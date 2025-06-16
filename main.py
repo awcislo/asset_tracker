@@ -435,7 +435,6 @@ class SoftwareAssetTable(QWidget):
             self.db.delete_software_asset(asset_id)
             self.refresh_table()
 
-
 class AddEmployeeForm(QWidget):
     def __init__(self, db):
         super().__init__()
@@ -805,6 +804,7 @@ class MainWindow(QMainWindow):
         is_it = (self.department.lower() == "information technology")
         self.sw_monitor = SoftwareAssetTable(self.db, user_is_it=is_it, user_id=self.user_id)
         self.sw_monitor.show()
+    
 
 class LoginWindow(QWidget):
     def __init__(self, db):
