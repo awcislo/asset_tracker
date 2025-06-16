@@ -1,5 +1,6 @@
 import sys
 import platform
+import requests
 import socket
 import bcrypt
 import mysql.connector
@@ -7,7 +8,7 @@ from datetime import datetime
 from PyQt5.QtWidgets import (
     QApplication, QMainWindow, QWidget, QLabel, QLineEdit, QPushButton,
     QVBoxLayout, QMessageBox, QTableWidget, QTableWidgetItem, QComboBox,
-    QTextEdit, QDateEdit, QHBoxLayout
+    QTextEdit, QDateEdit, QHBoxLayout, QCheckBox
 )
 
 DB_HOST = "lochnagar.abertay.ac.uk"
@@ -244,44 +245,6 @@ class AddSoftwareAssetForm(QWidget):
             self.db.link_software_to_hardware(sw_id, hardware_id)
             QMessageBox.information(self, "Success", "Software asset added and linked.")
 
-        if self.refresh_callback:
-            self.refresh_callback()
-        self.close()
-
-class EditEmployeeForm(QWidget):
-
-    def __init__(self, db, employee, refresh_callback=None):
-        super().__init__()
-        self.db = db
-        self.employee = employee
-        self.refresh_callback = refresh_callback
-        self.setWindowTitle("Edit Employee")
-        self.init_ui()
-
-    def init_ui(self):
-        layout = QVBoxLayout()
-        self.first_input = QLineEdit(self.employee[1])
-        self.last_input = QLineEdit(self.employee[2])
-        self.email_input = QLineEdit(self.employee[3])
-        self.dept_label = QLabel(self.employee[4])
-        save_btn = QPushButton("Save")
-        save_btn.clicked.connect(self.save_employee)
-        layout.addWidget(QLabel("First Name:")); layout.addWidget(self.first_input)
-        layout.addWidget(QLabel("Last Name:")); layout.addWidget(self.last_input)
-        layout.addWidget(QLabel("Email:")); layout.addWidget(self.email_input)
-        layout.addWidget(QLabel("Department:")); layout.addWidget(self.dept_label)
-        layout.addWidget(save_btn)
-        self.setLayout(layout)
-
-    def save_employee(self):
-        fn = self.first_input.text().strip()
-        ln = self.last_input.text().strip()
-        email = self.email_input.text().strip()
-        if not all([fn, ln, email]):
-            QMessageBox.warning(self, "Incomplete", "Please complete all fields.")
-            return
-        self.db.update_employee(self.employee[0], fn, ln, email)
-        QMessageBox.information(self, "Success", "Employee updated.")
         if self.refresh_callback:
             self.refresh_callback()
         self.close()
@@ -556,6 +519,43 @@ class EditEmployeeForm(QWidget):
         if self.refresh_callback:
             self.refresh_callback()
         self.close()
+        
+class HardwareSoftwareLinkForm(QWidget):
+    def __init__(self, db, hardware_id, refresh_callback=None):
+        super().__init__()
+        self.db = db
+        self.hardware_id = hardware_id
+        self.refresh_callback = refresh_callback
+        self.setWindowTitle("Link Software to Hardware")
+        self.init_ui()
+
+    def init_ui(self):
+        layout = QVBoxLayout()
+        self.checkboxes = {}
+        software_list = self.db.get_software_assets()
+        linked = [sw[0] for sw in self.db.get_hardware_for_software(self.hardware_id)]
+        for sw in software_list:
+            cb = QCheckBox(f"{sw[1]} {sw[2]} ({sw[3]})")
+            cb.setChecked(sw[0] in linked)
+            self.checkboxes[sw[0]] = cb
+            layout.addWidget(cb)
+        save_btn = QPushButton("Save Links")
+        save_btn.clicked.connect(self.save_links)
+        layout.addWidget(save_btn)
+        self.setLayout(layout)
+
+    def save_links(self):
+        selected_ids = [sw_id for sw_id, cb in self.checkboxes.items() if cb.isChecked()]
+        cursor = self.db.conn.cursor()
+        cursor.execute("DELETE FROM asset_links WHERE hardware_id=%s", (self.hardware_id,))
+        for sw_id in selected_ids:
+            cursor.execute("INSERT INTO asset_links (hardware_id, software_id, link_date) VALUES (%s, %s, NOW())", (self.hardware_id, sw_id))
+        self.db.conn.commit()
+        QMessageBox.information(self, "Success", "Software links updated.")
+        if self.refresh_callback:
+            self.refresh_callback()
+        self.close()
+
 
 class EmployeeMonitor(QWidget):
     def __init__(self, db, department):
@@ -601,10 +601,10 @@ class EmployeeMonitor(QWidget):
         # HARDWARE
         self.hw_table = QTableWidget()
         hw_assets = self.db.get_hardware_assets()
-        self.hw_table.setColumnCount(11)
+        self.hw_table.setColumnCount(12)
         self.hw_table.setRowCount(len(hw_assets))
         self.hw_table.setHorizontalHeaderLabels([
-            "ID", "System Name", "Model", "Manufacturer", "Type", "IP", "Date", "Note", "Employee", "Edit", "Delete"
+            "ID", "System Name", "Model", "Manufacturer", "Type", "IP", "Date", "Note", "Employee", "Edit", "Delete", "Manage Software"
         ])
         emp_map = {e[0]: f"{e[1]} {e[2]}" for e in employees}
         for i, asset in enumerate(hw_assets):
@@ -622,10 +622,18 @@ class EmployeeMonitor(QWidget):
             del_btn = QPushButton("Delete")
             del_btn.clicked.connect(lambda _, aid=asset[0]: self.delete_hardware(aid))
             self.hw_table.setCellWidget(i, 10, del_btn)
+            manage_sw_btn = QPushButton("Manage Software")
+            manage_sw_btn.clicked.connect(lambda _, hw_id=asset[0]: self.open_hardware_software_management(hw_id))
+            self.hw_table.setCellWidget(i, 11, manage_sw_btn)
+
         layout.addWidget(QLabel("Hardware:"))
         layout.addWidget(self.hw_table)
 
         self.setLayout(layout)
+
+    def open_hardware_software_management(self, hw_id):
+        self.hw_sw_form = HardwareSoftwareLinkForm(self.db, hw_id, refresh_callback=self.refresh_all)
+        self.hw_sw_form.show()
 
     def open_edit_employee(self, employee):
         self.edit_emp_form = EditEmployeeForm(self.db, employee, refresh_callback=self.refresh_all)
@@ -656,8 +664,6 @@ class EmployeeMonitor(QWidget):
     def refresh_all(self):
         self.init_ui()
 
-
-
 class MainWindow(QMainWindow):
     def __init__(self, db, user_id, department):
         super().__init__()
@@ -673,6 +679,9 @@ class MainWindow(QMainWindow):
         hw_btn = QPushButton("Capture Hardware Info")
         sw_btn = QPushButton("Capture Software Info")
         add_hw_btn = QPushButton("Add Hardware Asset")
+        sw_monitor_btn = QPushButton("Software Asset Monitor")
+        sw_monitor_btn.clicked.connect(self.open_software_monitor)
+        layout.addWidget(sw_monitor_btn)
         layout.addWidget(hw_btn)
         layout.addWidget(sw_btn)
         layout.addWidget(add_hw_btn)
@@ -692,6 +701,11 @@ class MainWindow(QMainWindow):
     def open_hw_form(self):
         self.hw_form = AddHardwareAssetForm(self.db)
         self.hw_form.show()
+        
+    def open_software_monitor(self):
+        self.sw_monitor = SoftwareAssetTable(self.db)
+        self.sw_monitor.show()
+    
 
 class LoginWindow(QWidget):
     def __init__(self, db):
