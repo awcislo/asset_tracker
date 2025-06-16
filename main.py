@@ -65,7 +65,7 @@ class AssetTrackerDB:
     def get_software_for_employee(self, emp_id):
         cursor = self.conn.cursor()
         cursor.execute("""
-            SELECT sa.os_name, sa.version FROM software_assets sa
+            SELECT sa.id, sa.os_name, sa.version, sa.manufacturer FROM software_assets sa
             JOIN asset_links al ON sa.id = al.software_id
             JOIN hardware_assets ha ON ha.id = al.hardware_id
             WHERE ha.employee_id = %s
@@ -361,10 +361,11 @@ class EditHardwareAssetForm(QWidget):
         self.close()
 
 class SoftwareAssetTable(QWidget):
-    def __init__(self, db, user_is_it=True):  # Allow passing IT-user flag
+    def __init__(self, db, user_is_it=True, user_id=None):
         super().__init__()
         self.db = db
         self.user_is_it = user_is_it
+        self.user_id = user_id
         self.setWindowTitle("Software Asset Management")
         self.init_ui()
 
@@ -372,54 +373,68 @@ class SoftwareAssetTable(QWidget):
         layout = QVBoxLayout()
         self.table = QTableWidget()
         self.refresh_table()
-        add_btn = QPushButton("Add Software")
-        add_btn.clicked.connect(self.open_add)
+        # Only IT can add new software
+        if self.user_is_it:
+            add_btn = QPushButton("Add Software")
+            add_btn.clicked.connect(self.open_add)
+            layout.addWidget(add_btn)
         layout.addWidget(self.table)
-        layout.addWidget(add_btn)
         self.setLayout(layout)
 
     def refresh_table(self):
-        data = self.db.get_software_assets()
-        col_count = 7 if self.user_is_it else 6
-        self.table.setColumnCount(col_count)
-        headers = ["ID", "Name", "Version", "Manufacturer", "Edit", "Delete"]
         if self.user_is_it:
-            headers.append("Check Vuln")
+            data = self.db.get_software_assets()
+        else:
+            data = self.db.get_software_for_employee(self.user_id)
+        col_count = 7 if self.user_is_it else 4
+        self.table.setColumnCount(col_count)
+        headers = ["ID", "Name", "Version", "Manufacturer"]
+        if self.user_is_it:
+            headers += ["Edit", "Delete", "Check Vuln"]
         self.table.setHorizontalHeaderLabels(headers)
         self.table.setRowCount(len(data))
         for row, asset in enumerate(data):
             for col in range(4):
                 self.table.setItem(row, col, QTableWidgetItem(str(asset[col])))
-            edit_btn = QPushButton("Edit")
-            edit_btn.clicked.connect(lambda _, a=asset: self.open_edit(a))
-            del_btn = QPushButton("Delete")
-            del_btn.clicked.connect(lambda _, aid=asset[0]: self.delete_software(aid))
-            self.table.setCellWidget(row, 4, edit_btn)
-            self.table.setCellWidget(row, 5, del_btn)
             if self.user_is_it:
+                edit_btn = QPushButton("Edit")
+                edit_btn.clicked.connect(lambda _, a=asset: self.open_edit(a))
+                del_btn = QPushButton("Delete")
+                del_btn.clicked.connect(lambda _, aid=asset[0]: self.delete_software(aid))
                 vuln_btn = QPushButton("Check Vulnerabilities")
                 vuln_btn.clicked.connect(lambda _, a=asset: self.check_vulns(a))
+                self.table.setCellWidget(row, 4, edit_btn)
+                self.table.setCellWidget(row, 5, del_btn)
                 self.table.setCellWidget(row, 6, vuln_btn)
+        # For non-IT users, make table read-only
+        if not self.user_is_it:
+            self.table.setEditTriggers(QTableWidget.NoEditTriggers)
 
     def check_vulns(self, asset):
         self.vuln_dialog = VulnerabilityDialog(asset[1], asset[2])
         self.vuln_dialog.setWindowModality(Qt.ApplicationModal)
         self.vuln_dialog.exec_()
 
-
     def open_add(self):
+        if not self.user_is_it:
+            return
         self.form = AddSoftwareAssetForm(self.db, refresh_callback=self.refresh_table)
         self.form.show()
 
     def open_edit(self, asset):
+        if not self.user_is_it:
+            return
         self.edit_form = AddSoftwareAssetForm(self.db, edit_asset=asset, refresh_callback=self.refresh_table)
         self.edit_form.show()
 
     def delete_software(self, asset_id):
+        if not self.user_is_it:
+            return
         reply = QMessageBox.question(self, "Confirm Delete", "Delete this software asset?", QMessageBox.Yes | QMessageBox.No)
         if reply == QMessageBox.Yes:
             self.db.delete_software_asset(asset_id)
             self.refresh_table()
+
 
 class AddEmployeeForm(QWidget):
     def __init__(self, db):
@@ -749,22 +764,31 @@ class MainWindow(QMainWindow):
     def init_ui(self):
         central = QWidget()
         layout = QVBoxLayout()
-        hw_btn = QPushButton("Capture Hardware Info")
-        sw_btn = QPushButton("Capture Software Info")
-        add_hw_btn = QPushButton("Add Hardware Asset")
-        sw_monitor_btn = QPushButton("Software Asset Monitor")
-        sw_monitor_btn.clicked.connect(self.open_software_monitor)
-        layout.addWidget(sw_monitor_btn)
-        layout.addWidget(hw_btn)
-        layout.addWidget(sw_btn)
-        layout.addWidget(add_hw_btn)
-        hw_btn.clicked.connect(lambda: QMessageBox.information(self, "Hardware Info", str(get_hardware_info())))
-        sw_btn.clicked.connect(lambda: QMessageBox.information(self, "Software Info", str(get_software_info())))
-        add_hw_btn.clicked.connect(lambda: self.open_hw_form())
-        if self.department.lower() == "information technology":
+        is_it = (self.department.lower() == "information technology")
+        if is_it:
+            hw_btn = QPushButton("Capture Hardware Info")
+            sw_btn = QPushButton("Capture Software Info")
+            add_hw_btn = QPushButton("Add Hardware Asset")
+            sw_monitor_btn = QPushButton("Software Asset Monitor")
+            sw_monitor_btn.clicked.connect(self.open_software_monitor)
+            layout.addWidget(sw_monitor_btn)
+            layout.addWidget(hw_btn)
+            layout.addWidget(sw_btn)
+            layout.addWidget(add_hw_btn)
+            hw_btn.clicked.connect(lambda: QMessageBox.information(self, "Hardware Info", str(get_hardware_info())))
+            sw_btn.clicked.connect(lambda: QMessageBox.information(self, "Software Info", str(get_software_info())))
+            add_hw_btn.clicked.connect(lambda: self.open_hw_form())
             emp_btn = QPushButton("Open Employee Monitor")
             emp_btn.clicked.connect(self.open_monitor)
             layout.addWidget(emp_btn)
+        else:
+            # Only "my assets" for non-IT users, nothing else
+            my_assets_btn = QPushButton("View My Assets")
+            my_assets_btn.clicked.connect(self.open_my_assets)
+            sw_monitor_btn = QPushButton("My Software Assets")
+            sw_monitor_btn.clicked.connect(self.open_software_monitor)
+            layout.addWidget(my_assets_btn)
+            layout.addWidget(sw_monitor_btn)
         central.setLayout(layout)
         self.setCentralWidget(central)
 
@@ -774,11 +798,13 @@ class MainWindow(QMainWindow):
     def open_hw_form(self):
         self.hw_form = AddHardwareAssetForm(self.db)
         self.hw_form.show()
-        
+    def open_my_assets(self):
+        self.my_assets = PersonalAssetViewer(self.db, self.user_id)
+        self.my_assets.show()
     def open_software_monitor(self):
-        self.sw_monitor = SoftwareAssetTable(self.db)
+        is_it = (self.department.lower() == "information technology")
+        self.sw_monitor = SoftwareAssetTable(self.db, user_is_it=is_it, user_id=self.user_id)
         self.sw_monitor.show()
-    
 
 class LoginWindow(QWidget):
     def __init__(self, db):
